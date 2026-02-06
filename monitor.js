@@ -27,10 +27,10 @@ async function run() {
         // Wait a brief moment for any dynamic content (Alpine/Livewire) to settle
         await page.waitForTimeout(2000);
 
-        // Check if the "Closed" text is present
+        // Check if the "Closed" text is presents
         const isClosed = await page.getByText(CLOSED_TEXT).isVisible();
 
-        if (isCloseed) {
+        if (isClosed) {
             console.log('Status: Reservations are still closed. Sending heartbeat...');
             await sendHeartbeat();
         } else {
