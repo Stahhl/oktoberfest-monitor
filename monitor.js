@@ -27,7 +27,7 @@ async function run() {
         // Wait a brief moment for any dynamic content (Alpine/Livewire) to settle
         await page.waitForTimeout(2000);
 
-        // Check if the "Closed" text is presents
+        // Check if the "Closed" text is present
         const isClosed = await page.getByText(CLOSED_TEXT).isVisible();
 
         if (isClosed) {
@@ -54,9 +54,10 @@ async function run() {
 
 async function sendHeartbeat() {
     try {
-        const timestamp = new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' });
+        // Format: YYYY-MM-DD HH:MM:SS
+        const timestamp = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' });
         await axios.post(WEBHOOK_URL, {
-            content: `🍺 **Monitor Check:** Reservations are still closed. Checked at ${timestamp}`
+            content: `🍺 **Monitor Check:** Still closed 🙁 Checked at ${timestamp}`
         });
         console.log('Heartbeat notification sent.');
     } catch (error) {
