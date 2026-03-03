@@ -6,6 +6,9 @@ const fs = require('fs');
 // Configuration
 const URL = 'https://reservierung.hb-festzelt.de/reservierung';
 const CLOSED_TEXT = 'Aktuell sind noch keine Reservierungen möglich';
+const TARGET_DATE_REGEX = /\b28\.09\.2026\b/i;
+const TARGET_SHIFT_REGEX = /^abend$/i;
+const TARGET_AREA_REGEX = /^boxen$/i;
 const TARGET_PAX_REGEX = /1\s*Tisch,\s*12\s*Personen/i;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const SCREENSHOT_PATH = 'screenshot.png';
@@ -38,19 +41,15 @@ async function run() {
             console.log('Status: Reservations are still closed.');
             await sendHeartbeat('Still closed.');
         } else {
-            const scanResult = await find12PersonTable(page);
+            const scanResult = await checkTargetCombination(page);
 
             if (scanResult.found) {
                 console.log('Target availability detected.');
                 await page.screenshot({ path: SCREENSHOT_PATH, fullPage: true });
                 await sendAlert(SCREENSHOT_PATH, scanResult);
             } else {
-                console.log('No matching 12-person option found.');
-                let message = `No 1-table/12-person option found after ${scanResult.checkedCombinations} combinations.`;
-                if (scanResult.notes.length > 0) {
-                    message += ` Notes: ${scanResult.notes.join(' | ')}`;
-                }
-                await sendHeartbeat(message);
+                console.log('Target combination is not currently available.');
+                await sendHeartbeat(scanResult.message);
             }
         }
     } catch (error) {
@@ -71,63 +70,77 @@ async function isPortalClosed(page) {
     return closedLocator.first().isVisible();
 }
 
-async function find12PersonTable(page) {
-    const notes = [];
-    let checkedCombinations = 0;
-
+async function checkTargetCombination(page) {
     const dateOptions = await getSelectableOptions(page, FORM_IDS.date);
     if (dateOptions.length === 0) {
         throw new Error('Date dropdown has no selectable options.');
     }
+    const date = findOption(dateOptions, TARGET_DATE_REGEX);
+    if (!date) {
+        return {
+            found: false,
+            message: `Target date 28.09.2026 is not available. Available dates: ${previewOptions(dateOptions)}`
+        };
+    }
+    await selectByValue(page, FORM_IDS.date, date.value);
 
-    for (const date of dateOptions) {
-        await selectByValue(page, FORM_IDS.date, date.value);
+    const shiftOptions = await getSelectableOptions(page, FORM_IDS.shift);
+    if (shiftOptions.length === 0) {
+        return {
+            found: false,
+            message: `No shifts available for ${date.label}.`
+        };
+    }
+    const shift = findOption(shiftOptions, TARGET_SHIFT_REGEX);
+    if (!shift) {
+        return {
+            found: false,
+            message: `Shift "Abend" is not available for ${date.label}. Available shifts: ${previewOptions(shiftOptions)}`
+        };
+    }
+    await selectByValue(page, FORM_IDS.shift, shift.value);
 
-        let shiftOptions = await getSelectableOptions(page, FORM_IDS.shift);
-        if (shiftOptions.length === 0) {
-            addNote(notes, `No shifts for ${date.label}`);
-            continue;
-        }
-        shiftOptions = prioritizeAbend(shiftOptions);
+    const areaOptions = await getSelectableOptions(page, FORM_IDS.area);
+    if (areaOptions.length === 0) {
+        return {
+            found: false,
+            message: `No areas available for ${date.label} / ${shift.label}.`
+        };
+    }
+    const area = findOption(areaOptions, TARGET_AREA_REGEX);
+    if (!area) {
+        return {
+            found: false,
+            message: `Area "Boxen" is not available for ${date.label} / ${shift.label}. Available areas: ${previewOptions(areaOptions)}`
+        };
+    }
+    await selectByValue(page, FORM_IDS.area, area.value);
 
-        for (const shift of shiftOptions) {
-            await selectByValue(page, FORM_IDS.shift, shift.value);
-
-            const areaOptions = await getSelectableOptions(page, FORM_IDS.area);
-            if (areaOptions.length === 0) {
-                addNote(notes, `No areas for ${date.label} / ${shift.label}`);
-                continue;
-            }
-
-            for (const area of areaOptions) {
-                checkedCombinations += 1;
-                await selectByValue(page, FORM_IDS.area, area.value);
-
-                const paxOptions = await getSelectableOptions(page, FORM_IDS.pax);
-                if (paxOptions.length === 0) {
-                    addNote(notes, `No pax options for ${date.label} / ${shift.label} / ${area.label}`);
-                    continue;
-                }
-
-                const match = paxOptions.find((option) => TARGET_PAX_REGEX.test(option.label));
-                if (match) {
-                    return {
-                        found: true,
-                        checkedCombinations,
-                        notes,
-                        match: {
-                            date: date.label,
-                            shift: shift.label,
-                            area: area.label,
-                            pax: match.label
-                        }
-                    };
-                }
-            }
-        }
+    const paxOptions = await getSelectableOptions(page, FORM_IDS.pax);
+    if (paxOptions.length === 0) {
+        return {
+            found: false,
+            message: `No people options available for ${date.label} / ${shift.label} / ${area.label}.`
+        };
     }
 
-    return { found: false, checkedCombinations, notes };
+    const pax = findOption(paxOptions, TARGET_PAX_REGEX);
+    if (!pax) {
+        return {
+            found: false,
+            message: `No "1 Tisch, 12 Personen" option for ${date.label} / ${shift.label} / ${area.label}. Available options: ${previewOptions(paxOptions, 8)}`
+        };
+    }
+
+    return {
+        found: true,
+        match: {
+            date: date.label,
+            shift: shift.label,
+            area: area.label,
+            pax: pax.label
+        }
+    };
 }
 
 async function getSelectableOptions(page, selectId) {
@@ -164,20 +177,16 @@ function escapeCssId(value) {
     return value.replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, '\\$1');
 }
 
-function prioritizeAbend(options) {
-    return [...options].sort((a, b) => {
-        const aIsAbend = /abend/i.test(a.label);
-        const bIsAbend = /abend/i.test(b.label);
-        if (aIsAbend && !bIsAbend) return -1;
-        if (!aIsAbend && bIsAbend) return 1;
-        return 0;
-    });
+function findOption(options, pattern) {
+    return options.find((option) => pattern.test(option.label.trim()));
 }
 
-function addNote(notes, note) {
-    if (notes.length < 6) {
-        notes.push(note);
+function previewOptions(options, limit = 5) {
+    const labels = options.map((option) => option.label);
+    if (labels.length <= limit) {
+        return labels.join(', ');
     }
+    return `${labels.slice(0, limit).join(', ')} (+${labels.length - limit} more)`;
 }
 
 async function waitForCascadeUpdate(page) {

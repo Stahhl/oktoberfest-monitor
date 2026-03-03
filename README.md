@@ -1,6 +1,6 @@
 # 🍺 Oktoberfest Reservation Monitor
 
-This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It walks through the cascading dropdowns and alerts when it finds `1 Tisch, 12 Personen` in the final people-count dropdown.
+This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It uses a fixed combination and alerts only when it finds `1 Tisch, 12 Personen` for that combination.
 
 ## 🚀 Setup Instructions
 
@@ -30,12 +30,11 @@ The monitor is now set up!
 ## 🛠️ How it Works
 - The script uses **Playwright** (a headless browser) to load the page exactly like a real user.
 - If the closed text (`Aktuell sind noch keine Reservierungen möglich`) is visible, it sends a heartbeat.
-- If the portal is open, it iterates the dropdowns in order:
-  - `Datum`
-  - `Schicht` (tries all available options, prefers `Abend` when present)
-  - `Bereich`
-  - `Anzahl gewünschte Personen`
-- It alerts only when it finds an option matching `1 Tisch, 12 Personen`.
+- If the portal is open, it selects:
+  - `Datum`: `28.09.2026` (matched by label text, not by backend value/timestamp)
+  - `Schicht`: `Abend`
+  - `Bereich`: `Boxen`
+- It then checks `Anzahl gewünschte Personen` for an option matching `1 Tisch, 12 Personen`.
 - If an unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
 
 ## 📂 Files
