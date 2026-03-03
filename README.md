@@ -1,6 +1,6 @@
 # 🍺 Oktoberfest Reservation Monitor
 
-This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. If the "reservations closed" message disappears, it sends an alert with a screenshot to your Discord server.
+This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It walks through the cascading dropdowns and alerts when it finds `1 Tisch, 12 Personen` in the final people-count dropdown.
 
 ## 🚀 Setup Instructions
 
@@ -29,8 +29,14 @@ The monitor is now set up!
 
 ## 🛠️ How it Works
 - The script uses **Playwright** (a headless browser) to load the page exactly like a real user.
-- It looks for the text: *"Aktuell sind noch keine Reservierungen möglich"*.
-- If that text is **missing**, it assumes reservations are open, takes a screenshot, and messages you.
+- If the closed text (`Aktuell sind noch keine Reservierungen möglich`) is visible, it sends a heartbeat.
+- If the portal is open, it iterates the dropdowns in order:
+  - `Datum`
+  - `Schicht` (tries all available options, prefers `Abend` when present)
+  - `Bereich`
+  - `Anzahl gewünschte Personen`
+- It alerts only when it finds an option matching `1 Tisch, 12 Personen`.
+- If an unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
 
 ## 📂 Files
 - `monitor.js`: The main logic script.
