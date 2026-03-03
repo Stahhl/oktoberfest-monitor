@@ -212,7 +212,7 @@ async function sendHeartbeat(statusText) {
     try {
         const timestamp = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Berlin' });
         await axios.post(WEBHOOK_URL, {
-            content: `Monitor check: ${statusText} Checked at ${timestamp}`
+            content: `🟥 Monitor check: ${statusText} Checked at ${timestamp}`
         });
         console.log('Heartbeat notification sent.');
     } catch (error) {
