@@ -1,6 +1,6 @@
 # 🍺 Oktoberfest Reservation Monitor
 
-This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It uses a fixed combination and alerts only when it finds `1 Tisch, 12 Personen` for that combination.
+This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It uses a fixed combination and alerts when any seating option with `>= 12` persons is available for that combination.
 
 ## 🚀 Setup Instructions
 
@@ -34,7 +34,7 @@ The monitor is now set up!
   - `Datum`: `28.09.2026` (matched by label text, not by backend value/timestamp)
   - `Schicht`: `Abend`
   - `Bereich`: `Boxen`
-- It then checks `Anzahl gewünschte Personen` for an option matching `1 Tisch, 12 Personen`.
+- It then checks `Anzahl gewünschte Personen` and accepts any option where total persons is `>= 12` (for example `1x12`, `1x20`, `2x8` totals like 16, etc.).
 - If an unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
 
 ## 📂 Files

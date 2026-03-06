@@ -9,7 +9,7 @@ const CLOSED_TEXT = 'Aktuell sind noch keine Reservierungen möglich';
 const TARGET_DATE_REGEX = /\b28\.09\.2026\b/i;
 const TARGET_SHIFT_REGEX = /^abend$/i;
 const TARGET_AREA_REGEX = /^boxen$/i;
-const TARGET_PAX_REGEX = /1\s*Tisch,\s*12\s*Personen/i;
+const MIN_TOTAL_PERSONS = 12;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const SCREENSHOT_PATH = 'screenshot.png';
 const FORM_IDS = {
@@ -124,13 +124,21 @@ async function checkTargetCombination(page) {
         };
     }
 
-    const pax = findOption(paxOptions, TARGET_PAX_REGEX);
-    if (!pax) {
+    const qualifyingPaxOptions = paxOptions.filter((option) => {
+        const totalPersons = extractTotalPersons(option);
+        return totalPersons !== null && totalPersons >= MIN_TOTAL_PERSONS;
+    });
+
+    if (qualifyingPaxOptions.length === 0) {
         return {
             found: false,
-            message: `No "1 Tisch, 12 Personen" option for ${date.label} / ${shift.label} / ${area.label}. Available options: ${previewOptions(paxOptions, 8)}`
+            message: `No seating option with >= ${MIN_TOTAL_PERSONS} persons for ${date.label} / ${shift.label} / ${area.label}. Available options: ${previewPaxOptions(paxOptions, 8)}`
         };
     }
+
+    const bestMatch = qualifyingPaxOptions.sort((a, b) => {
+        return extractTotalPersons(a) - extractTotalPersons(b);
+    })[0];
 
     return {
         found: true,
@@ -138,8 +146,9 @@ async function checkTargetCombination(page) {
             date: date.label,
             shift: shift.label,
             area: area.label,
-            pax: pax.label
-        }
+            pax: bestMatch.label
+        },
+        qualifyingOptions: qualifyingPaxOptions.map((option) => formatPaxOption(option))
     };
 }
 
@@ -189,6 +198,39 @@ function previewOptions(options, limit = 5) {
     return `${labels.slice(0, limit).join(', ')} (+${labels.length - limit} more)`;
 }
 
+function extractTotalPersons(option) {
+    const value = option.value || '';
+    const valueParts = value.split('_');
+    const lastPart = valueParts[valueParts.length - 1];
+    if (/^\d+$/.test(lastPart)) {
+        return Number(lastPart);
+    }
+
+    const label = option.label || '';
+    const labelMatch = label.match(/,\s*(\d+)\s*Personen/i) || label.match(/(\d+)\s*Personen/i);
+    if (labelMatch) {
+        return Number(labelMatch[1]);
+    }
+
+    return null;
+}
+
+function formatPaxOption(option) {
+    const totalPersons = extractTotalPersons(option);
+    if (totalPersons === null) {
+        return option.label;
+    }
+    return `${option.label} [total=${totalPersons}]`;
+}
+
+function previewPaxOptions(options, limit = 5) {
+    const labels = options.map((option) => formatPaxOption(option));
+    if (labels.length <= limit) {
+        return labels.join(', ');
+    }
+    return `${labels.slice(0, limit).join(', ')} (+${labels.length - limit} more)`;
+}
+
 async function waitForCascadeUpdate(page) {
     try {
         await page.waitForLoadState('networkidle', { timeout: 5000 });
@@ -221,8 +263,10 @@ async function sendHeartbeat(statusText) {
 }
 
 async function sendAlert(imagePath, result) {
+    const shownMatches = result.qualifyingOptions.slice(0, 8);
+    const extraCount = result.qualifyingOptions.length - shownMatches.length;
     const payload = {
-        content: '@everyone Oktoberfest reservation alert: 1 table with 12 persons is available.',
+        content: `@everyone Oktoberfest reservation alert: seating for >= ${MIN_TOTAL_PERSONS} persons is available.`,
         embeds: [{
             title: 'Go to Reservation Page',
             url: URL,
@@ -231,7 +275,10 @@ async function sendAlert(imagePath, result) {
                 `Date: ${result.match.date}`,
                 `Shift: ${result.match.shift}`,
                 `Area: ${result.match.area}`,
-                `Option: ${result.match.pax}`
+                `Closest match: ${result.match.pax}`,
+                `Qualifying options:`,
+                ...shownMatches,
+                ...(extraCount > 0 ? [`(+${extraCount} more)`] : [])
             ].join('\n'),
             timestamp: new Date().toISOString()
         }]
