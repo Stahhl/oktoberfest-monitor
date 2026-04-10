@@ -35,8 +35,10 @@ The monitor is now set up!
   - `Schicht`: `Abend`
   - `Bereich`: `Boxen`
 - It then checks `Anzahl gewünschte Personen` and accepts any option where total persons is `>= 12` (for example `1x12`, `1x20`, `2x8` totals like 16, etc.).
+- It waits 30 seconds between the two date checks to reduce abrupt scripted behavior inside the same session.
 - A run succeeds if either date has qualifying seating, and the alert includes the per-date results.
-- If an unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
+- If Cloudflare presents a challenge/block page, it sends a dedicated Discord alert with a screenshot and diagnostic markers.
+- If another unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
 
 ## 📂 Files
 - `monitor.js`: The main logic script.

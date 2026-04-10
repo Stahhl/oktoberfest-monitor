@@ -13,6 +13,7 @@ const TARGET_DATES = [
 const TARGET_SHIFT_REGEX = /^abend$/i;
 const TARGET_AREA_REGEX = /^boxen$/i;
 const MIN_TOTAL_PERSONS = 12;
+const BETWEEN_DATES_DELAY_MS = 30000;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const SCREENSHOT_PATH = 'screenshot.png';
 const FORM_IDS = {
@@ -38,6 +39,14 @@ async function run() {
         await page.goto(URL, { waitUntil: 'networkidle' });
         await waitForCascadeUpdate(page);
 
+        const initialBlockState = await detectCloudflareBlock(page);
+        if (initialBlockState.blocked) {
+            console.log('Cloudflare block detected before scanning.');
+            await captureScreenshot(page, SCREENSHOT_PATH);
+            await sendCloudflareAlert(SCREENSHOT_PATH, initialBlockState);
+            return;
+        }
+
         const isClosed = await isPortalClosed(page);
 
         if (isClosed) {
@@ -57,8 +66,13 @@ async function run() {
         }
     } catch (error) {
         console.error('An error occurred during the check:', error);
+        const blockState = await detectCloudflareBlock(page);
         await captureScreenshot(page, SCREENSHOT_PATH);
-        await sendUnexpected(SCREENSHOT_PATH, error);
+        if (blockState.blocked) {
+            await sendCloudflareAlert(SCREENSHOT_PATH, blockState);
+        } else {
+            await sendUnexpected(SCREENSHOT_PATH, error);
+        }
     } finally {
         await browser.close();
         console.log('Check complete.');
@@ -80,14 +94,32 @@ async function checkTargetDates(page) {
         throw new Error('Date dropdown has no selectable options.');
     }
 
-    for (const targetDate of TARGET_DATES) {
-        results.push(await checkSingleDate(page, targetDate, dateOptions));
+    for (const [index, targetDate] of TARGET_DATES.entries()) {
+        const dateResult = await checkSingleDate(page, targetDate, dateOptions);
+        if (dateResult.blocked) {
+            return {
+                found: false,
+                blocked: true,
+                block: dateResult.block,
+                matches: results.filter((result) => result.found),
+                failures: results.filter((result) => !result.found)
+            };
+        }
+
+        results.push(dateResult);
+
+        const nextTargetDate = TARGET_DATES[index + 1];
+        if (nextTargetDate) {
+            console.log(`Waiting ${BETWEEN_DATES_DELAY_MS / 1000}s before checking ${nextTargetDate.label}...`);
+            await page.waitForTimeout(BETWEEN_DATES_DELAY_MS);
+        }
     }
 
     const matches = results.filter((result) => result.found);
     if (matches.length > 0) {
         return {
             found: true,
+            blocked: false,
             matches,
             failures: results.filter((result) => !result.found),
             message: `Availability found for ${matches.length} of ${TARGET_DATES.length} target dates.`
@@ -96,6 +128,7 @@ async function checkTargetDates(page) {
 
     return {
         found: false,
+        blocked: false,
         matches: [],
         failures: results,
         message: summarizeFailures(results)
@@ -112,6 +145,17 @@ async function checkSingleDate(page, targetDate, dateOptions) {
         };
     }
     await selectByValue(page, FORM_IDS.date, date.value);
+
+    const blockAfterDate = await detectCloudflareBlock(page);
+    if (blockAfterDate.blocked) {
+        return {
+            blocked: true,
+            block: {
+                ...blockAfterDate,
+                stage: `after selecting date ${date.label}`
+            }
+        };
+    }
 
     const shiftOptions = await getSelectableOptions(page, FORM_IDS.shift);
     if (shiftOptions.length === 0) {
@@ -131,6 +175,17 @@ async function checkSingleDate(page, targetDate, dateOptions) {
     }
     await selectByValue(page, FORM_IDS.shift, shift.value);
 
+    const blockAfterShift = await detectCloudflareBlock(page);
+    if (blockAfterShift.blocked) {
+        return {
+            blocked: true,
+            block: {
+                ...blockAfterShift,
+                stage: `after selecting shift for ${date.label}`
+            }
+        };
+    }
+
     const areaOptions = await getSelectableOptions(page, FORM_IDS.area);
     if (areaOptions.length === 0) {
         return {
@@ -148,6 +203,17 @@ async function checkSingleDate(page, targetDate, dateOptions) {
         };
     }
     await selectByValue(page, FORM_IDS.area, area.value);
+
+    const blockAfterArea = await detectCloudflareBlock(page);
+    if (blockAfterArea.blocked) {
+        return {
+            blocked: true,
+            block: {
+                ...blockAfterArea,
+                stage: `after selecting area for ${date.label}`
+            }
+        };
+    }
 
     const paxOptions = await getSelectableOptions(page, FORM_IDS.pax);
     if (paxOptions.length === 0) {
@@ -272,6 +338,38 @@ function summarizeFailures(results) {
     return `No availability found for ${TARGET_DATES.length} target dates. ${summaries.join(' | ')}`;
 }
 
+async function detectCloudflareBlock(page) {
+    const url = page.url();
+    const title = await page.title().catch(() => '');
+    const bodyText = await page.locator('body').innerText().catch(() => '');
+    const html = await page.content().catch(() => '');
+    const haystacks = [url, title, bodyText, html].filter(Boolean).join('\n');
+
+    const markerPatterns = [
+        { label: 'cloudflare challenge', pattern: /checking your browser|please enable javascript and cookies|verify you are human/i },
+        { label: 'cloudflare brand', pattern: /\bcloudflare\b/i },
+        { label: 'cdn-cgi challenge url', pattern: /cdn-cgi\/challenge-platform/i },
+        { label: 'attention required', pattern: /attention required/i },
+        { label: 'ray id', pattern: /ray id/i }
+    ];
+
+    const markers = markerPatterns
+        .filter((marker) => marker.pattern.test(haystacks))
+        .map((marker) => marker.label);
+
+    if (markers.length === 0) {
+        return { blocked: false, markers: [], url, title };
+    }
+
+    return {
+        blocked: true,
+        reason: 'Cloudflare challenge or block page detected',
+        markers,
+        url,
+        title
+    };
+}
+
 async function waitForCascadeUpdate(page) {
     try {
         await page.waitForLoadState('networkidle', { timeout: 5000 });
@@ -343,6 +441,27 @@ async function sendAlert(imagePath, result) {
     };
 
     await sendDiscordPayload(payload, imagePath, 'match.png');
+}
+
+async function sendCloudflareAlert(imagePath, blockState) {
+    const payload = {
+        content: '@everyone Oktoberfest monitor likely hit a Cloudflare block. Screenshot attached for manual review.',
+        embeds: [{
+            title: 'Cloudflare Block Detected',
+            url: URL,
+            color: 16753920,
+            description: [
+                `Reason: ${blockState.reason}`,
+                `Stage: ${blockState.stage || 'during page load or scanning'}`,
+                `URL: ${blockState.url || 'unknown'}`,
+                `Title: ${blockState.title || 'unknown'}`,
+                `Markers: ${blockState.markers && blockState.markers.length > 0 ? blockState.markers.join(', ') : 'none'}`
+            ].join('\n'),
+            timestamp: new Date().toISOString()
+        }]
+    };
+
+    await sendDiscordPayload(payload, imagePath, 'cloudflare.png');
 }
 
 async function sendUnexpected(imagePath, error) {
