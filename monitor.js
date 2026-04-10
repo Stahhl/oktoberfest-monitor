@@ -6,7 +6,10 @@ const fs = require('fs');
 // Configuration
 const URL = 'https://reservierung.hb-festzelt.de/reservierung';
 const CLOSED_TEXT = 'Aktuell sind noch keine Reservierungen möglich';
-const TARGET_DATE_REGEX = /\b28\.09\.2026\b/i;
+const TARGET_DATES = [
+    { label: '28.09.2026', pattern: /\b28\.09\.2026\b/i },
+    { label: '29.09.2026', pattern: /\b29\.09\.2026\b/i }
+];
 const TARGET_SHIFT_REGEX = /^abend$/i;
 const TARGET_AREA_REGEX = /^boxen$/i;
 const MIN_TOTAL_PERSONS = 12;
@@ -41,7 +44,7 @@ async function run() {
             console.log('Status: Reservations are still closed.');
             await sendHeartbeat('Still closed.');
         } else {
-            const scanResult = await checkTargetCombination(page);
+            const scanResult = await checkTargetDates(page);
 
             if (scanResult.found) {
                 console.log('Target availability detected.');
@@ -70,16 +73,42 @@ async function isPortalClosed(page) {
     return closedLocator.first().isVisible();
 }
 
-async function checkTargetCombination(page) {
+async function checkTargetDates(page) {
+    const results = [];
     const dateOptions = await getSelectableOptions(page, FORM_IDS.date);
     if (dateOptions.length === 0) {
         throw new Error('Date dropdown has no selectable options.');
     }
-    const date = findOption(dateOptions, TARGET_DATE_REGEX);
+
+    for (const targetDate of TARGET_DATES) {
+        results.push(await checkSingleDate(page, targetDate, dateOptions));
+    }
+
+    const matches = results.filter((result) => result.found);
+    if (matches.length > 0) {
+        return {
+            found: true,
+            matches,
+            failures: results.filter((result) => !result.found),
+            message: `Availability found for ${matches.length} of ${TARGET_DATES.length} target dates.`
+        };
+    }
+
+    return {
+        found: false,
+        matches: [],
+        failures: results,
+        message: summarizeFailures(results)
+    };
+}
+
+async function checkSingleDate(page, targetDate, dateOptions) {
+    const date = findOption(dateOptions, targetDate.pattern);
     if (!date) {
         return {
             found: false,
-            message: `Target date 28.09.2026 is not available. Available dates: ${previewOptions(dateOptions)}`
+            dateLabel: targetDate.label,
+            reason: `date not available. Available dates: ${previewOptions(dateOptions)}`
         };
     }
     await selectByValue(page, FORM_IDS.date, date.value);
@@ -88,14 +117,16 @@ async function checkTargetCombination(page) {
     if (shiftOptions.length === 0) {
         return {
             found: false,
-            message: `No shifts available for ${date.label}.`
+            dateLabel: date.label,
+            reason: 'no shifts available'
         };
     }
     const shift = findOption(shiftOptions, TARGET_SHIFT_REGEX);
     if (!shift) {
         return {
             found: false,
-            message: `Shift "Abend" is not available for ${date.label}. Available shifts: ${previewOptions(shiftOptions)}`
+            dateLabel: date.label,
+            reason: `Abend not available. Available shifts: ${previewOptions(shiftOptions)}`
         };
     }
     await selectByValue(page, FORM_IDS.shift, shift.value);
@@ -104,14 +135,16 @@ async function checkTargetCombination(page) {
     if (areaOptions.length === 0) {
         return {
             found: false,
-            message: `No areas available for ${date.label} / ${shift.label}.`
+            dateLabel: date.label,
+            reason: `no areas available for ${shift.label}`
         };
     }
     const area = findOption(areaOptions, TARGET_AREA_REGEX);
     if (!area) {
         return {
             found: false,
-            message: `Area "Boxen" is not available for ${date.label} / ${shift.label}. Available areas: ${previewOptions(areaOptions)}`
+            dateLabel: date.label,
+            reason: `Boxen not available. Available areas: ${previewOptions(areaOptions)}`
         };
     }
     await selectByValue(page, FORM_IDS.area, area.value);
@@ -120,7 +153,8 @@ async function checkTargetCombination(page) {
     if (paxOptions.length === 0) {
         return {
             found: false,
-            message: `No people options available for ${date.label} / ${shift.label} / ${area.label}.`
+            dateLabel: date.label,
+            reason: `no people options available for ${shift.label} / ${area.label}`
         };
     }
 
@@ -132,7 +166,8 @@ async function checkTargetCombination(page) {
     if (qualifyingPaxOptions.length === 0) {
         return {
             found: false,
-            message: `No seating option with >= ${MIN_TOTAL_PERSONS} persons for ${date.label} / ${shift.label} / ${area.label}. Available options: ${previewPaxOptions(paxOptions, 8)}`
+            dateLabel: date.label,
+            reason: `no seating option with >= ${MIN_TOTAL_PERSONS} persons. Available options: ${previewPaxOptions(paxOptions, 8)}`
         };
     }
 
@@ -142,6 +177,7 @@ async function checkTargetCombination(page) {
 
     return {
         found: true,
+        dateLabel: date.label,
         match: {
             date: date.label,
             shift: shift.label,
@@ -231,6 +267,11 @@ function previewPaxOptions(options, limit = 5) {
     return `${labels.slice(0, limit).join(', ')} (+${labels.length - limit} more)`;
 }
 
+function summarizeFailures(results) {
+    const summaries = results.map((result) => `${result.dateLabel}: ${result.reason}`);
+    return `No availability found for ${TARGET_DATES.length} target dates. ${summaries.join(' | ')}`;
+}
+
 async function waitForCascadeUpdate(page) {
     try {
         await page.waitForLoadState('networkidle', { timeout: 5000 });
@@ -263,23 +304,40 @@ async function sendHeartbeat(statusText) {
 }
 
 async function sendAlert(imagePath, result) {
-    const shownMatches = result.qualifyingOptions.slice(0, 8);
-    const extraCount = result.qualifyingOptions.length - shownMatches.length;
+    const totalDates = TARGET_DATES.length;
+    const successfulDates = result.matches.length;
+    const descriptionLines = [
+        `Availability found for ${successfulDates} of ${totalDates} target dates.`
+    ];
+
+    for (const match of result.matches) {
+        const shownMatches = match.qualifyingOptions.slice(0, 8);
+        const extraCount = match.qualifyingOptions.length - shownMatches.length;
+        descriptionLines.push('');
+        descriptionLines.push(`Date: ${match.match.date}`);
+        descriptionLines.push(`Shift: ${match.match.shift}`);
+        descriptionLines.push(`Area: ${match.match.area}`);
+        descriptionLines.push(`Closest match: ${match.match.pax}`);
+        descriptionLines.push('Qualifying options:');
+        descriptionLines.push(...shownMatches);
+        if (extraCount > 0) {
+            descriptionLines.push(`(+${extraCount} more)`);
+        }
+    }
+
+    if (result.failures.length > 0) {
+        descriptionLines.push('');
+        descriptionLines.push('Dates without availability:');
+        descriptionLines.push(...result.failures.map((failure) => `${failure.dateLabel}: ${failure.reason}`));
+    }
+
     const payload = {
-        content: `@everyone Oktoberfest reservation alert: seating for >= ${MIN_TOTAL_PERSONS} persons is available.`,
+        content: `@everyone Oktoberfest reservation alert: seating for >= ${MIN_TOTAL_PERSONS} persons is available for ${successfulDates} of ${totalDates} target dates.`,
         embeds: [{
             title: 'Go to Reservation Page',
             url: URL,
             color: 5763719,
-            description: [
-                `Date: ${result.match.date}`,
-                `Shift: ${result.match.shift}`,
-                `Area: ${result.match.area}`,
-                `Closest match: ${result.match.pax}`,
-                `Qualifying options:`,
-                ...shownMatches,
-                ...(extraCount > 0 ? [`(+${extraCount} more)`] : [])
-            ].join('\n'),
+            description: descriptionLines.join('\n'),
             timestamp: new Date().toISOString()
         }]
     };
