@@ -8,7 +8,7 @@ const URL = 'https://reservierung.hb-festzelt.de/reservierung';
 const CLOSED_TEXT = 'Aktuell sind noch keine Reservierungen möglich';
 const TARGET_DATES = [
     { label: '28.09.2026', pattern: /\b28\.09\.2026\b/i },
-    { label: '29.09.2026', pattern: /\b29\.09\.2026\b/i }
+    // { label: '29.09.2026', pattern: /\b29\.09\.2026\b/i }
 ];
 const TARGET_SHIFT_REGEX = /^abend$/i;
 const TARGET_AREA_REGEX = /^boxen$/i;
