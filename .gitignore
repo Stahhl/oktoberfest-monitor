@@ -1,3 +1,6 @@
 node_modules/
 screenshot.png
 .DS_Store
+.browser-profile/
+monitor.log
+run.sh

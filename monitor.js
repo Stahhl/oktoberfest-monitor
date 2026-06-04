@@ -2,13 +2,14 @@ const { chromium } = require('playwright');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
+const path = require('path');
 
 // Configuration
 const URL = 'https://reservierung.hb-festzelt.de/reservierung';
 const CLOSED_TEXT = 'Aktuell sind noch keine Reservierungen möglich';
 const TARGET_DATES = [
     { label: '28.09.2026', pattern: /\b28\.09\.2026\b/i },
-    // { label: '29.09.2026', pattern: /\b29\.09\.2026\b/i }
+    { label: '29.09.2026', pattern: /\b29\.09\.2026\b/i }
 ];
 const TARGET_SHIFT_REGEX = /^abend$/i;
 const TARGET_AREA_REGEX = /^boxen$/i;
@@ -16,6 +17,10 @@ const MIN_TOTAL_PERSONS = 12;
 const BETWEEN_DATES_DELAY_MS = 30000;
 const WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 const SCREENSHOT_PATH = 'screenshot.png';
+// Persistent browser profile so a Cloudflare clearance cookie survives between hourly runs.
+const USER_DATA_DIR = path.join(__dirname, '.browser-profile');
+// Headed by default (looks like a real user); set HEADLESS=1 to force headless for debugging.
+const HEADLESS = process.env.HEADLESS === '1';
 const FORM_IDS = {
     date: 'data.createBookingStepOneForm.date',
     shift: 'data.createBookingStepOneForm.booking_list_id',
@@ -31,8 +36,14 @@ async function run() {
         process.exit(1);
     }
 
-    const browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
+        headless: HEADLESS,
+        viewport: { width: 1280, height: 900 },
+        locale: 'de-DE',
+        timezoneId: 'Europe/Berlin',
+        args: ['--disable-blink-features=AutomationControlled']
+    });
+    const page = context.pages()[0] || await context.newPage();
 
     try {
         console.log(`Navigating to ${URL}...`);
@@ -74,7 +85,7 @@ async function run() {
             await sendUnexpected(SCREENSHOT_PATH, error);
         }
     } finally {
-        await browser.close();
+        await context.close();
         console.log('Check complete.');
     }
 }
