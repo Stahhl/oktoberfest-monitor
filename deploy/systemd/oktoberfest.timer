@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Oktoberfest monitor hourly
+
+[Timer]
+# Minute 0 of every hour, matching the macOS LaunchAgent.
+OnCalendar=*-*-* *:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

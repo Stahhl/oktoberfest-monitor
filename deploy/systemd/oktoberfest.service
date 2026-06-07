@@ -1,0 +1,7 @@
+[Unit]
+Description=Oktoberfest reservation monitor
+
+[Service]
+Type=oneshot
+# %h = the user's home dir. Adjust if you clone somewhere other than ~/dev/oktoberfest.
+ExecStart=%h/dev/oktoberfest/run.sh

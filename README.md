@@ -2,7 +2,7 @@
 
 This tool automatically checks the [Hofbräu Festzelt reservation page](https://reservierung.hb-festzelt.de/reservierung) every hour. It uses two fixed date combinations and alerts when any seating option with `>= 12` persons is available for either target date.
 
-It runs on a Mac via a `launchd` LaunchAgent, driving a **headed** browser with a **persistent profile** from a residential IP. (It previously ran on GitHub Actions, but the datacenter IP + headless browser got repeatedly challenged by Cloudflare.)
+It runs on a Mac via a `launchd` LaunchAgent, driving a **headed** browser with a **persistent profile** from a residential IP. (It previously ran on GitHub Actions, but the datacenter IP + headless browser got repeatedly challenged by Cloudflare.) It can also run on a **headless Linux server** on a residential connection using Xvfb + a systemd timer — see [§4](#4-alternative-install-on-a-headless-linux-server-xvfb--systemd).
 
 ## 🚀 Setup Instructions
 
@@ -12,9 +12,9 @@ It runs on a Mac via a `launchd` LaunchAgent, driving a **headed** browser with 
 3. Click **New Webhook**.
 4. Copy the **Webhook URL**.
 
-### 2. Configure the wrapper
-1. Open `run.sh` (gitignored — it holds your secret) and paste your webhook URL into `DISCORD_WEBHOOK_URL`.
-2. Adjust the `PATH` line if your Node lives somewhere other than the nvm path shown.
+### 2. Configure secrets
+1. Copy `.env.example` to `.env` (gitignored) and paste your webhook URL into `DISCORD_WEBHOOK_URL`.
+2. If `node` isn't on the minimal PATH that launchd/systemd use, set `NODE_BIN_PATH` to its bin dir (e.g. your nvm path). `run.sh` (committed, no secrets) sources `.env` and is shared by macOS and Linux.
 
 ### 3. Install the scheduler (macOS LaunchAgent)
 ```sh
@@ -38,6 +38,30 @@ DISCORD_WEBHOOK_URL="<url>" node monitor.js   # add HEADLESS=1 to run without a 
 
 > **Requirements:** the Mac must stay **logged in** (LaunchAgents don't run at the login window) and **plugged in** (on battery it can still sleep; with "Prevent automatic sleeping on power adapter when the display is off" enabled it stays awake on power). A browser window briefly appears each hour — that's expected (headed mode).
 
+### 4. (Alternative) Install on a headless Linux server (Xvfb + systemd)
+On an always-on Linux box on a **residential** connection (datacenter IPs get blocked by Cloudflare), you can run the same `run.sh` without a GUI — Chromium runs **headed** inside a virtual framebuffer:
+```sh
+# Node >= 18 (use NodeSource or nvm if apt's is too old), then from the repo root:
+npm ci
+npx playwright install --with-deps chromium   # browser + shared libs (needs sudo)
+sudo apt-get install -y xvfb                   # virtual framebuffer for headed mode
+
+cp .env.example .env                           # then fill in DISCORD_WEBHOOK_URL (+ NODE_BIN_PATH if needed)
+
+# Install the hourly systemd user timer (unit files live in deploy/systemd/):
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/oktoberfest.service deploy/systemd/oktoberfest.timer ~/.config/systemd/user/
+loginctl enable-linger "$USER"                 # let it run without an interactive login
+systemctl --user daemon-reload
+systemctl --user enable --now oktoberfest.timer
+
+# Test now / inspect:
+systemctl --user start oktoberfest.service
+journalctl --user -u oktoberfest.service -f
+systemctl --user list-timers | grep oktoberfest
+```
+`run.sh` auto-detects the OS (`caffeinate` on macOS, `xvfb-run` on Linux). The persistent `.browser-profile/` is created fresh on first run — don't copy it from the Mac, since the Cloudflare clearance cookie is bound to the browser platform.
+
 ## 🛠️ How it Works
 - The script uses **Playwright** to drive a **headed** Chromium with a persistent profile (`.browser-profile/`) so a Cloudflare clearance cookie survives between runs, and a German locale/timezone.
 - If the closed text (`Aktuell sind noch keine Reservierungen möglich`) is visible, it sends a heartbeat.
@@ -53,6 +77,8 @@ DISCORD_WEBHOOK_URL="<url>" node monitor.js   # add HEADLESS=1 to run without a 
 
 ## 📂 Files
 - `monitor.js`: The main logic script.
-- `run.sh`: launchd wrapper (gitignored) holding the webhook secret and Node path.
-- `~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist`: The hourly schedule (LaunchAgent).
+- `run.sh`: Cross-platform wrapper (committed, no secrets). Sources `.env`; uses `caffeinate` on macOS and `xvfb-run` on Linux.
+- `.env` / `.env.example`: `.env` (gitignored) holds the webhook secret + optional `NODE_BIN_PATH`; copy it from `.env.example`.
+- `deploy/systemd/oktoberfest.{service,timer}`: systemd user timer for the headless Linux setup.
+- `~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist`: The hourly schedule on macOS (LaunchAgent).
 - `.github/workflows/check.yml`: The old GitHub Actions schedule, now disabled (kept for reference / manual fallback).

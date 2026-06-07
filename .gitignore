@@ -3,4 +3,4 @@ screenshot.png
 .DS_Store
 .browser-profile/
 monitor.log
-run.sh
+.env
