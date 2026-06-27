@@ -17,6 +17,10 @@ if [ -n "${NODE_BIN_PATH:-}" ]; then
   export PATH="$NODE_BIN_PATH:$PATH"
 fi
 
+# Jitter: the scheduler fires exactly at minute 0, which is a bot-like tell.
+# Sleep a random 0-20 min so the actual request time varies hour to hour.
+sleep $((RANDOM % 1200))
+
 if [ "$(uname)" = "Darwin" ]; then
   # macOS: caffeinate blocks idle sleep for the duration of the check.
   exec caffeinate -i node monitor.js

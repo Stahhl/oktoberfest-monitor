@@ -43,7 +43,7 @@ On an always-on Linux box on a **residential** connection (datacenter IPs get bl
 ```sh
 # Node >= 18 (use NodeSource or nvm if apt's is too old), then from the repo root:
 npm ci
-npx playwright install --with-deps chromium   # browser + shared libs (needs sudo)
+npx patchright install chrome --with-deps     # real Chrome + shared libs (needs sudo)
 sudo apt-get install -y xvfb                   # virtual framebuffer for headed mode
 
 cp .env.example .env                           # then fill in DISCORD_WEBHOOK_URL (+ NODE_BIN_PATH if needed)
@@ -63,7 +63,7 @@ systemctl --user list-timers | grep oktoberfest
 `run.sh` auto-detects the OS (`caffeinate` on macOS, `xvfb-run` on Linux). The persistent `.browser-profile/` is created fresh on first run — don't copy it from the Mac, since the Cloudflare clearance cookie is bound to the browser platform.
 
 ## 🛠️ How it Works
-- The script uses **Playwright** to drive a **headed** Chromium with a persistent profile (`.browser-profile/`) so a Cloudflare clearance cookie survives between runs, and a German locale/timezone.
+- The script uses **Patchright** (a stealth-patched Playwright drop-in) to drive **real Chrome** (`channel: 'chrome'`) in **headed** mode with a persistent profile (`.browser-profile/`) so a Cloudflare clearance cookie survives between runs, and a German locale/timezone. Patchright patches the automation/CDP leaks (e.g. `Runtime.enable`) that vanilla Playwright exposes to Cloudflare; if real Chrome isn't installed it falls back to bundled Chromium.
 - If the closed text (`Aktuell sind noch keine Reservierungen möglich`) is visible, it sends a heartbeat.
 - If the portal is open, it selects:
   - `Datum`: `28.09.2026` and `29.09.2026` (matched by label text, not by backend value/timestamp)
@@ -72,8 +72,13 @@ systemctl --user list-timers | grep oktoberfest
 - It then checks `Anzahl gewünschte Personen` and accepts any option where total persons is `>= 12` (for example `1x12`, `1x20`, `2x8` totals like 16, etc.).
 - It waits 30 seconds between the two date checks to reduce abrupt scripted behavior inside the same session.
 - A run succeeds if either date has qualifying seating, and the alert includes the per-date results.
-- If Cloudflare presents a challenge/block page, it sends a dedicated Discord alert with a screenshot and diagnostic markers.
+- Cloudflare "managed challenge" interstitials usually auto-clear within a few seconds for a legit browser, so the script waits them out (polling, with one reload on the initial load) before reacting. It only sends a Discord alert when a **hard** block page is detected or a challenge fails to clear — so transient challenges no longer spam alerts.
 - If another unexpected error happens, it sends a Discord ping with a screenshot for manual interpretation.
+
+## 🧱 If Cloudflare blocks still persist
+Cloudflare is adversarial, so nothing guarantees zero blocks. The current setup (Patchright + real Chrome + residential IP + persistent profile + automatic challenge wait-out) should make hard blocks rare and self-recovering. If they become frequent anyway, the next escalations both cost money:
+- **Residential proxy** (e.g. Bright Data, IPRoyal) — rotate the egress IP. Wire it via Playwright's `proxy` launch option in `launchContext()`.
+- **CAPTCHA / Turnstile solver** (e.g. 2Captcha, CapMonster) — answer challenges programmatically when waiting them out isn't enough.
 
 ## 📂 Files
 - `monitor.js`: The main logic script.

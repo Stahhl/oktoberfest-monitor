@@ -1,4 +1,6 @@
-const { chromium } = require('playwright');
+// Patchright is a near-drop-in Playwright replacement that patches the CDP /
+// automation leaks (Runtime.enable, etc.) Cloudflare flags. Same API.
+const { chromium } = require('patchright');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
@@ -36,13 +38,7 @@ async function run() {
         process.exit(1);
     }
 
-    const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
-        headless: HEADLESS,
-        viewport: { width: 1280, height: 900 },
-        locale: 'de-DE',
-        timezoneId: 'Europe/Berlin',
-        args: ['--disable-blink-features=AutomationControlled']
-    });
+    const context = await launchContext();
     const page = context.pages()[0] || await context.newPage();
 
     try {
@@ -50,9 +46,12 @@ async function run() {
         await page.goto(URL, { waitUntil: 'networkidle' });
         await waitForCascadeUpdate(page);
 
-        const initialBlockState = await detectCloudflareBlock(page);
+        let initialBlockState = await detectCloudflareBlock(page);
+        if (initialBlockState.blocked && initialBlockState.kind === 'challenge') {
+            initialBlockState = (await waitForChallengeToClear(page)).finalState;
+        }
         if (initialBlockState.blocked) {
-            console.log('Cloudflare block detected before scanning.');
+            console.log(`Cloudflare ${initialBlockState.kind} block persists before scanning.`);
             await captureScreenshot(page, SCREENSHOT_PATH);
             await sendCloudflareAlert(SCREENSHOT_PATH, initialBlockState);
             return;
@@ -87,6 +86,26 @@ async function run() {
     } finally {
         await context.close();
         console.log('Check complete.');
+    }
+}
+
+// Launch a persistent browser context. Patchright + real Chrome (the "chrome"
+// channel) presents a far more legitimate fingerprint than bundled Chromium;
+// fall back to bundled Chromium if Chrome isn't installed. No custom automation
+// flags — Patchright hides automation internally, and extra flags (e.g.
+// --disable-blink-features) are themselves a detection tell.
+async function launchContext() {
+    const baseOptions = {
+        headless: HEADLESS,
+        viewport: null,
+        locale: 'de-DE',
+        timezoneId: 'Europe/Berlin'
+    };
+    try {
+        return await chromium.launchPersistentContext(USER_DATA_DIR, { ...baseOptions, channel: 'chrome' });
+    } catch (error) {
+        console.warn(`Real Chrome unavailable (${error.message}); falling back to bundled Chromium.`);
+        return chromium.launchPersistentContext(USER_DATA_DIR, baseOptions);
     }
 }
 
@@ -157,15 +176,9 @@ async function checkSingleDate(page, targetDate, dateOptions) {
     }
     await selectByValue(page, FORM_IDS.date, date.value);
 
-    const blockAfterDate = await detectCloudflareBlock(page);
-    if (blockAfterDate.blocked) {
-        return {
-            blocked: true,
-            block: {
-                ...blockAfterDate,
-                stage: `after selecting date ${date.label}`
-            }
-        };
+    const blockAfterDate = await detectBlockAfterStep(page, `after selecting date ${date.label}`);
+    if (blockAfterDate) {
+        return { blocked: true, block: blockAfterDate };
     }
 
     const shiftOptions = await getSelectableOptions(page, FORM_IDS.shift);
@@ -186,15 +199,9 @@ async function checkSingleDate(page, targetDate, dateOptions) {
     }
     await selectByValue(page, FORM_IDS.shift, shift.value);
 
-    const blockAfterShift = await detectCloudflareBlock(page);
-    if (blockAfterShift.blocked) {
-        return {
-            blocked: true,
-            block: {
-                ...blockAfterShift,
-                stage: `after selecting shift for ${date.label}`
-            }
-        };
+    const blockAfterShift = await detectBlockAfterStep(page, `after selecting shift for ${date.label}`);
+    if (blockAfterShift) {
+        return { blocked: true, block: blockAfterShift };
     }
 
     const areaOptions = await getSelectableOptions(page, FORM_IDS.area);
@@ -215,15 +222,9 @@ async function checkSingleDate(page, targetDate, dateOptions) {
     }
     await selectByValue(page, FORM_IDS.area, area.value);
 
-    const blockAfterArea = await detectCloudflareBlock(page);
-    if (blockAfterArea.blocked) {
-        return {
-            blocked: true,
-            block: {
-                ...blockAfterArea,
-                stage: `after selecting area for ${date.label}`
-            }
-        };
+    const blockAfterArea = await detectBlockAfterStep(page, `after selecting area for ${date.label}`);
+    if (blockAfterArea) {
+        return { blocked: true, block: blockAfterArea };
     }
 
     const paxOptions = await getSelectableOptions(page, FORM_IDS.pax);
@@ -354,31 +355,86 @@ async function detectCloudflareBlock(page) {
     const title = await page.title().catch(() => '');
     const bodyText = await page.locator('body').innerText().catch(() => '');
     const html = await page.content().catch(() => '');
+
+    // Cloudflare injects its challenge/bot-management script (cdn-cgi/challenge-platform)
+    // into the *normal* page too, so a marker match alone is NOT a block. If we reached
+    // the real reservation app — the booking form, or the "closed" notice — we got
+    // through, regardless of any injected Cloudflare scripts. This is the difference
+    // between a genuine interstitial (real content absent) and a false alarm.
+    const reachedApp = html.includes('createBookingStepOneForm') || bodyText.includes(CLOSED_TEXT);
+    if (reachedApp) {
+        return { blocked: false, kind: null, markers: [], url, title };
+    }
+
     const haystacks = [url, title, bodyText, html].filter(Boolean).join('\n');
 
+    // kind 'challenge' = an interstitial a legitimate browser usually auto-solves
+    // within a few seconds (worth waiting out). kind 'hard' = a definitive block
+    // page that won't clear by waiting. 'ambiguous' markers appear on both, so on
+    // their own they don't make it a hard block — we'd rather wait and find out.
     const markerPatterns = [
-        { label: 'cloudflare challenge', pattern: /checking your browser|please enable javascript and cookies|verify you are human/i },
-        { label: 'cloudflare brand', pattern: /\bcloudflare\b/i },
-        { label: 'cdn-cgi challenge url', pattern: /cdn-cgi\/challenge-platform/i },
-        { label: 'attention required', pattern: /attention required/i },
-        { label: 'ray id', pattern: /ray id/i }
+        { label: 'cloudflare challenge', kind: 'challenge', pattern: /checking your browser|please enable javascript and cookies|verify you are human|just a moment/i },
+        { label: 'cdn-cgi challenge url', kind: 'challenge', pattern: /cdn-cgi\/challenge-platform/i },
+        { label: 'cloudflare brand', kind: 'ambiguous', pattern: /\bcloudflare\b/i },
+        { label: 'ray id', kind: 'ambiguous', pattern: /ray id/i },
+        { label: 'attention required', kind: 'hard', pattern: /attention required/i },
+        { label: 'blocked', kind: 'hard', pattern: /you have been blocked|sorry, you have been blocked|error 1020/i }
     ];
 
-    const markers = markerPatterns
-        .filter((marker) => marker.pattern.test(haystacks))
-        .map((marker) => marker.label);
+    const matched = markerPatterns.filter((marker) => marker.pattern.test(haystacks));
+    const markers = matched.map((marker) => marker.label);
 
     if (markers.length === 0) {
-        return { blocked: false, markers: [], url, title };
+        return { blocked: false, kind: null, markers: [], url, title };
     }
+
+    const kind = matched.some((marker) => marker.kind === 'hard') ? 'hard' : 'challenge';
 
     return {
         blocked: true,
-        reason: 'Cloudflare challenge or block page detected',
+        kind,
+        reason: kind === 'hard' ? 'Cloudflare hard block page detected' : 'Cloudflare challenge detected',
         markers,
         url,
         title
     };
+}
+
+// A Cloudflare "managed challenge" interstitial usually auto-clears within a few
+// seconds for a legitimate browser. Poll until the page settles to real content
+// or the budget runs out. `reload` nudges a stuck interstitial once at the
+// midpoint — disabled for mid-form checks where a reload would discard the
+// selections made so far.
+async function waitForChallengeToClear(page, { timeoutMs = 45000, pollMs = 3000, reload = true } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let reloaded = false;
+    let finalState = await detectCloudflareBlock(page);
+
+    while (finalState.blocked && finalState.kind === 'challenge' && Date.now() < deadline) {
+        console.log(`Cloudflare challenge present (${finalState.markers.join(', ')}); waiting for it to clear...`);
+        await page.waitForTimeout(pollMs);
+
+        if (reload && !reloaded && Date.now() > deadline - timeoutMs / 2) {
+            reloaded = true;
+            await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
+            await waitForCascadeUpdate(page);
+        }
+
+        finalState = await detectCloudflareBlock(page);
+    }
+
+    return { cleared: !finalState.blocked, finalState };
+}
+
+// After an AJAX cascade step, a Cloudflare challenge can briefly flash up. Wait it
+// out (no reload, so the in-progress form selections survive) before treating it
+// as a real block. Returns the block state with `stage` attached, or null if clear.
+async function detectBlockAfterStep(page, stage) {
+    let state = await detectCloudflareBlock(page);
+    if (state.blocked && state.kind === 'challenge') {
+        state = (await waitForChallengeToClear(page, { timeoutMs: 20000, reload: false })).finalState;
+    }
+    return state.blocked ? { ...state, stage } : null;
 }
 
 async function waitForCascadeUpdate(page) {
@@ -506,4 +562,8 @@ async function sendDiscordPayload(payload, imagePath, filename) {
     }
 }
 
-run();
+if (require.main === module) {
+    run();
+}
+
+module.exports = { run, launchContext, detectCloudflareBlock, waitForChallengeToClear };
