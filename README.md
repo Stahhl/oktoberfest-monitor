@@ -18,7 +18,16 @@ It runs on a Mac via a `launchd` LaunchAgent, driving a **headed** browser with 
 
 ### 3. Install the scheduler (macOS LaunchAgent)
 ```sh
-# Load the hourly job (modern launchctl; use `launchctl load -w <plist>` on older macOS)
+# Generate the LaunchAgent from the committed template (run from the repo root).
+# __REPO__ is replaced with the current path, since launchd needs absolute paths
+# and (unlike systemd's %h) does no variable expansion of its own:
+mkdir -p ~/Library/LaunchAgents
+sed "s|__REPO__|$PWD|g" deploy/launchd/com.stahl.oktoberfest-monitor.plist \
+  > ~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist
+
+# Load the hourly job into your logged-in GUI session (gui/$(id -u) = your user's
+# graphical session, needed because the monitor opens a real browser window).
+# Modern launchctl; use `launchctl load -w <plist>` on older macOS.
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist
 
 # Force a run now to test
@@ -85,5 +94,6 @@ Cloudflare is adversarial, so nothing guarantees zero blocks. The current setup 
 - `run.sh`: Cross-platform wrapper (committed, no secrets). Sources `.env`; uses `caffeinate` on macOS and `xvfb-run` on Linux.
 - `.env` / `.env.example`: `.env` (gitignored) holds the webhook secret + optional `NODE_BIN_PATH`; copy it from `.env.example`.
 - `deploy/systemd/oktoberfest.{service,timer}`: systemd user timer for the headless Linux setup.
-- `~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist`: The hourly schedule on macOS (LaunchAgent).
+- `deploy/launchd/com.stahl.oktoberfest-monitor.plist`: LaunchAgent template for the macOS hourly schedule (with `__REPO__` placeholder; §3 copies it into `~/Library/LaunchAgents/` with the path substituted).
+- `~/Library/LaunchAgents/com.stahl.oktoberfest-monitor.plist`: The installed (generated) copy of the above — the live hourly schedule on macOS.
 - `.github/workflows/check.yml`: The old GitHub Actions schedule, now disabled (kept for reference / manual fallback).
